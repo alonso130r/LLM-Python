@@ -1,10 +1,16 @@
+import argparse
+import mmap
+import pickle
+import random
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-import mmap
-import random
-import pickle
-import argparse
+
+import importlib
+sophia_optim = importlib.import_module('sophia-optim')
+SophiaOptim = sophia_optim.SophiaOptim
+Lookahead = sophia_optim.Lookahead
 
 parser = argparse.ArgumentParser(description='This is a demonstration program')
 
@@ -27,6 +33,7 @@ n_embd = 512
 n_head = 16
 n_layer = 16
 dropout = 0.1
+ema_decay = 0.999
 
 print(device)
 
@@ -226,33 +233,60 @@ class GPTLanguageModel(nn.Module):
         return index
 
 
-''' FIX LOAD/CREATE SYSTEM '''
+''' FIXED LOAD/CREATE SYSTEM '''
 try:
     print('loading model parameters...')
     with open('model-01.pkl', 'rb') as f:
         model = pickle.load(f)
     print('loaded successfully!')
 except FileNotFoundError:
+    print('no model found, creating new one...')
     model = GPTLanguageModel(vocab_size)
 
 m = model.to(device)
 
 # create a PyTorch optimizer
+base_optimizer = SophiaOptim(model.parameters(), lr=learning_rate)
+lookahead_optimizer = Lookahead(base_optimizer)
+ema_weights = {name: param.clone().detach() for name, param in model.named_parameters()}
+
+
+def update_ema_weights(ema_weights, model_parameters, decay):
+    with torch.no_grad():
+        for (name, param), ema_param in zip(model_parameters.items(), ema_weights.values()):
+            ema_param.data.mul_(decay).add_(param.data, alpha=1 - decay)
+
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
 for iter in range(max_iters):
     if iter % eval_iters == 0:
+        # apply ema weights before evaluation
+        original_weights = {name: param.clone() for name, param in model.named_parameters()}
+        for name, param in model.named_parameters():
+            if name in ema_weights:
+                param.data.copy_(ema_weights[name])
+
         losses = estimate_loss()
         print(f"step: {iter}, train loss: {losses['train']:.3f}, val loss: {losses['val']:.3f}")
+
+        # restore original weights after eval
+        for name, param in model.named_parameters():
+            if name in original_weights:
+                param.data.copy_(original_weights[name])
 
     # sample a batch of data
     xb, yb = get_batch('train')
 
     # evaluate the loss
     logits, loss = model.forward(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
+    lookahead_optimizer.zero_grad(set_to_none=True)
     loss.backward()
-    optimizer.step()
+    lookahead_optimizer.step()
+
+    # update ema weights
+    model_parameters = {name: param for name, param in model.named_parameters()}
+    update_ema_weights(ema_weights, model_parameters, ema_decay)
+
 print(loss.item())
 
 with open('model-01.pkl', 'wb') as f:

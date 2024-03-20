@@ -225,11 +225,16 @@ class GPTLanguageModel(nn.Module):
             index = torch.cat((index, index_next), dim=1) # (B, T+1)
         return index
 
-model = GPTLanguageModel(vocab_size)
-print('loading model parameters...')
-with open('model-01.pkl', 'rb') as f:
-    model = pickle.load(f)
-print('loaded successfully!')
+
+''' FIXED LOAD/CREATE SYSTEM '''
+try:
+    print('loading model parameters...')
+    with open('model-01.pkl', 'rb') as f:
+        model = pickle.load(f)
+    print('loaded successfully!')
+except FileNotFoundError:
+    print('no model found, creating new one...')
+    model = GPTLanguageModel(vocab_size)
 m = model.to(device)
 
 # create a PyTorch optimizer
